@@ -1075,6 +1075,10 @@ func (s *Server) passthrough(w http.ResponseWriter, r *http.Request, p provider.
 				return res.StatusCode, msg, false
 			}
 		}
+		if p.Preset == "openrouter" && openRouterSharedPool(b) {
+			// Keep OpenRouter's routing-only detail through error translation.
+			w.Header().Set(openRouterLimitSourceHeader, "upstream_provider_shared_pool")
+		}
 		keepRetry(w.Header(), res.Header, b)
 		return writeError(w, proto, res.StatusCode, msg), msg, true
 	}
@@ -1274,6 +1278,10 @@ func (s *Server) translate(w http.ResponseWriter, r *http.Request, p provider.Pr
 	if res.StatusCode >= 400 {
 		b, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 		msg := p.Name + ": " + provider.APIError(b, res.Status)
+		if p.Preset == "openrouter" && openRouterSharedPool(b) {
+			// Keep OpenRouter's routing-only detail through error translation.
+			w.Header().Set(openRouterLimitSourceHeader, "upstream_provider_shared_pool")
+		}
 		keepRetry(w.Header(), res.Header, b)
 		return writeError(w, from, res.StatusCode, msg), msg
 	}

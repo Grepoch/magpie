@@ -483,7 +483,7 @@ func (h *holdWriter) WriteHeader(code int) {
 func (h *holdWriter) pass() {
 	dst := h.w.Header()
 	for k, v := range h.header {
-		if k != resetsHeader { // magpie's own note, for restAfter
+		if k != resetsHeader && k != openRouterLimitSourceHeader { // magpie's own routing notes
 			dst[k] = v
 		}
 	}

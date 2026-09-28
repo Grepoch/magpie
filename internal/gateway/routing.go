@@ -150,6 +150,25 @@ func failure(status int, body []byte) string {
 	return failOther
 }
 
+// openRouterSharedPool says an OpenRouter free model was refused by the
+// provider's shared pool, rather than by OpenRouter's account-wide free tier.
+func openRouterSharedPool(body []byte) bool {
+	var reply struct {
+		Error struct {
+			Metadata struct {
+				LimitSource string `json:"limit_source"`
+			} `json:"metadata"`
+		} `json:"error"`
+	}
+	return json.Unmarshal(body, &reply) == nil && reply.Error.Metadata.LimitSource == "upstream_provider_shared_pool"
+}
+
+const openRouterLimitSourceHeader = "X-Magpie-OpenRouter-Limit-Source"
+
+func openRouterSharedPoolRest(header http.Header, body []byte) bool {
+	return header.Get(openRouterLimitSourceHeader) == "upstream_provider_shared_pool" || openRouterSharedPool(body)
+}
+
 // Rest is why a candidate sits out after a failure, and until when.
 type Rest struct {
 	Why    string    `json:"why"`    // failCredit, failQuota, failRate, failOther
@@ -301,9 +320,9 @@ func (s *Server) restAfter(c candidate, status int, header http.Header, body []b
 		r.agent, r.user = a.Agent, a.User
 	}
 	id := c.restKey()
-	// A 429 from a free OpenRouter model is a model's free-tier limit, not
-	// the account being out of credit. Keep other models available.
-	if why == failRate && c.isOpenRouterFree() {
+	// OpenRouter identifies a provider's shared pool separately from its
+	// account-wide free-tier limit. Only the former leaves sibling models ready.
+	if why == failRate && c.isOpenRouterFree() && openRouterSharedPoolRest(header, body) {
 		id = c.restID()
 	}
 	restingUntil.Lock()
