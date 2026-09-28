@@ -163,12 +163,6 @@ func openRouterSharedPool(body []byte) bool {
 	return json.Unmarshal(body, &reply) == nil && reply.Error.Metadata.LimitSource == "upstream_provider_shared_pool"
 }
 
-const openRouterLimitSourceHeader = "X-Magpie-OpenRouter-Limit-Source"
-
-func openRouterSharedPoolRest(header http.Header, body []byte) bool {
-	return header.Get(openRouterLimitSourceHeader) == "upstream_provider_shared_pool" || openRouterSharedPool(body)
-}
-
 // Rest is why a candidate sits out after a failure, and until when.
 type Rest struct {
 	Why    string    `json:"why"`    // failCredit, failQuota, failRate, failOther
@@ -260,6 +254,12 @@ func resetsAt(body []byte, now time.Time) time.Duration {
 
 // restAfter sets a failed candidate aside for as long as its failure says.
 func (s *Server) restAfter(c candidate, status int, header http.Header, body []byte) Rest {
+	return s.restAfterMarked(c, status, header, body, openRouterSharedPool(body))
+}
+
+// restAfterMarked keeps an upstream routing fact through gateway error
+// translation without putting it in the response sent to the client.
+func (s *Server) restAfterMarked(c candidate, status int, header http.Header, body []byte, sharedPool bool) Rest {
 	now := time.Now()
 	d := fallbackCooldown
 	why := failure(status, body)
@@ -315,16 +315,17 @@ func (s *Server) restAfter(c candidate, status int, header http.Header, body []b
 	if a := c.p.Account; a != nil && why != failOther && why != failVerify {
 		provider.StaleAllowance(a.Agent, a.User) // ask again what it has left
 	}
-	r.Until, r.Key = now.Add(d), c.restKey()
+	r.Until = now.Add(d)
 	if a := c.p.Account; a != nil {
 		r.agent, r.user = a.Agent, a.User
 	}
 	id := c.restKey()
 	// OpenRouter identifies a provider's shared pool separately from its
 	// account-wide free-tier limit. Only the former leaves sibling models ready.
-	if why == failRate && c.isOpenRouterFree() && openRouterSharedPoolRest(header, body) {
+	if why == failRate && c.isOpenRouterFree() && sharedPool {
 		id = c.restID()
 	}
+	r.Key = id
 	restingUntil.Lock()
 	restingUntil.m[id] = r.Until
 	restingUntil.note[id] = r

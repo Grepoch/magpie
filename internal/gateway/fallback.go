@@ -449,11 +449,12 @@ type holdWriter struct {
 	passing bool
 	held    bytes.Buffer
 
-	stream  bool      // a stream held until its first content
-	since   time.Time // when it began
-	scanned int       // how much of held has been read as events
-	failure int       // the status the stream's error stands for
-	failMsg string
+	stream     bool      // a stream held until its first content
+	since      time.Time // when it began
+	scanned    int       // how much of held has been read as events
+	failure    int       // the status the stream's error stands for
+	failMsg    string
+	sharedPool bool // an OpenRouter upstream pool rejected this attempt
 
 	ended bool   // the stream's last event was written: the reply is whole
 	tail  []byte // the end of the last write, for a marker split across two
@@ -483,7 +484,7 @@ func (h *holdWriter) WriteHeader(code int) {
 func (h *holdWriter) pass() {
 	dst := h.w.Header()
 	for k, v := range h.header {
-		if k != resetsHeader && k != openRouterLimitSourceHeader { // magpie's own routing notes
+		if k != resetsHeader { // magpie's own note, for restAfter
 			dst[k] = v
 		}
 	}

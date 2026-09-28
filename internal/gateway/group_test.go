@@ -121,14 +121,44 @@ func TestOpenRouterSharedPoolRateLimitRestsOneModel(t *testing.T) {
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "from b") {
 		t.Fatalf("group reply: %d %s", rec.Code, rec.Body.String())
 	}
-	if rec.Header().Get(openRouterLimitSourceHeader) != "" {
+	if rec.Header().Get("X-Magpie-OpenRouter-Limit-Source") != "" {
 		t.Fatal("internal OpenRouter routing detail reached the client")
+	}
+	if first := s.trace.routes[len(s.trace.routes)-1].Tries[0]; first.Rest == nil || first.Rest.Key != "orf/x/a:free" {
+		t.Fatalf("shared-pool rest key: %+v", first)
 	}
 	if code, reply := postAs(t, s, "", body); code != http.StatusOK || !strings.Contains(reply, "from b") {
 		t.Fatalf("second group reply: %d %s", code, reply)
 	}
 	if got := strings.Join(f.tried, " "); got != "x/a:free x/b:free x/b:free" {
 		t.Fatalf("models tried %q, want a b b", got)
+	}
+	if !s.Unrest("orf/x/a:free") || s.resting("orf/x/a:free") {
+		t.Fatal("model rest was not lifted by its key")
+	}
+}
+
+// The routing hint is internal even when this is the only candidate, so the
+// gateway passes the upstream error through to the client.
+func TestOpenRouterSharedPoolDirectReplyHidesRoutingHeader(t *testing.T) {
+	fresh(t)
+	f := &openRouterFreeLimit{body: `{"error":{"message":"Provider returned error","code":429,"metadata":{"limit_source":"upstream_provider_shared_pool"}}}`}
+	up := httptest.NewServer(f)
+	t.Cleanup(up.Close)
+	if err := provider.Save(provider.Provider{
+		ID: "orf", Name: "OpenRouter Free", Preset: "openrouter", Key: "k",
+		Models: []string{"x/a:free"}, Chat: up.URL + "/v1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := New()
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"orf/x/a:free","messages":[{"role":"user","content":"hi"}]}`)))
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("direct reply: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("X-Magpie-OpenRouter-Limit-Source"); got != "" {
+		t.Fatalf("internal routing header leaked: %q", got)
 	}
 }
 
