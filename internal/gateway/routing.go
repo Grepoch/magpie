@@ -66,6 +66,12 @@ func served(rest, key string, tokens int) {
 // How long a candidate sits out, by why it failed.
 const (
 	creditRest  = 30 * time.Minute // out of credit: until someone tops it up
+	// freeModelRest is how long one OpenRouter free model (preset is
+	// "openrouter" and the name ends in ":free") sits out after a
+	// balance or credit refusal of its own: the refusal is the free tier's
+	// own limit talking, not an empty account, so it rests alone and only
+	// briefly.
+	freeModelRest = 5 * time.Minute
 	quotaRest   = 15 * time.Minute // out of quota, with no word of when it resets
 	longestWait = time.Hour        // the most a vendor's own "try again at" is trusted
 	// longestQuota is the most an account out of quota sits out, when it
@@ -233,6 +239,14 @@ func (s *Server) restAfter(c candidate, status int, header http.Header, body []b
 	r := Rest{Why: why, Status: status, By: "cooldown"}
 	switch why {
 	case failCredit:
+		if c.p.Preset == "openrouter" && strings.HasSuffix(c.model, ":free") {
+			// OpenRouter free models are billed at nothing, so a credit or
+			// balance refusal for one is its own tier limit, not an empty
+			// account: rest only this model, briefly, so the provider's other
+			// models — and a group built on it — keep working.
+			d, r.By = freeModelRest, "free"
+			break
+		}
 		d, r.By = creditRest, "credit"
 	case failQuota:
 		// out of quota is out until the quota comes back: when the refusal
@@ -287,8 +301,8 @@ func (s *Server) restAfter(c candidate, status int, header http.Header, body []b
 		r.agent, r.user = a.Agent, a.User
 	}
 	restingUntil.Lock()
-	restingUntil.m[c.restKey()] = r.Until
-	restingUntil.note[c.restKey()] = r
+	restingUntil.m[c.restID()] = r.Until
+	restingUntil.note[c.restID()] = r
 	restingUntil.Unlock()
 	return r
 }

@@ -262,3 +262,45 @@ func TestUnknownClaudeGoesFirst(t *testing.T) {
 		t.Fatalf("other agent: %+v", w)
 	}
 }
+
+// An OpenRouter free model (preset "openrouter", name ends in ":free")
+// that fails with a credit refusal rests by itself, not with the whole
+// provider: a free tier's own refusal must not bench the provider's other
+// models for half an hour.
+func TestFreeModelRestsAlone(t *testing.T) {
+	s := &Server{}
+	p := provider.Provider{ID: "openrouter-free", Preset: "openrouter", Key: "k"}
+	free := candidate{p: p, model: "inclusionai/ling-3.0-flash-sante:free", rest: "openrouter-free"}
+	sib := candidate{p: p, model: "other/thing:free", rest: "openrouter-free"}
+	s.restAfter(free, 402, http.Header{}, []byte(`{"error":{"message":"Your credit balance is too low"}}`))
+	if d := until(free.restID()); d != freeModelRest {
+		t.Fatalf("free model rests %v, want %v", d, freeModelRest)
+	}
+	if _, ok := restingUntil.m["openrouter-free"]; ok {
+		t.Fatal("a free model's refusal benched the whole provider")
+	}
+	if _, ok := restingUntil.m[sib.restID()]; ok {
+		t.Fatal("a free model's refusal benched a sibling free model")
+	}
+	// a non-free model still benches the provider for the usual half hour
+	paid := candidate{p: p, model: "anthropic/claude-opus-4", rest: "openrouter-free"}
+	s.restAfter(paid, 402, http.Header{}, []byte(`{"error":{"message":"Insufficient credits"}}`))
+	if d := until("openrouter-free"); d != creditRest {
+		t.Fatalf("paid model rests %v, want %v", d, creditRest)
+	}
+}
+
+// A free model on a non-OpenRouter provider keeps the old behavior: a
+// credit refusal benches the whole provider, since it is the account's.
+func TestFreeModelOutsideOpenRouterBenchesProvider(t *testing.T) {
+	s := &Server{}
+	p := provider.Provider{ID: "relay", Preset: "relay", Key: "k"}
+	free := candidate{p: p, model: "local/thing:free", rest: "relay"}
+	s.restAfter(free, 402, http.Header{}, []byte(`{"error":{"message":"Insufficient credits"}}`))
+	if d := until("relay"); d != creditRest {
+		t.Fatalf("non-openrouter free model rests %v, want %v", d, creditRest)
+	}
+	if _, ok := restingUntil.m[free.restID()]; ok {
+		t.Fatal("non-openrouter free model should be benched by the provider key")
+	}
+}
