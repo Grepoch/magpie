@@ -56,7 +56,21 @@ func served(rest, key string, tokens int) {
 	routed.used[rest] = tokenUse{routed.used[rest].now(now) + float64(tokens), now}
 	delete(routed.failures, rest)
 	routed.Unlock()
-	// one that answered — tried all the same, or again — rests no longer
+	clearRest(key)
+}
+
+// servedCandidate records an answer and ends both the provider's rest and,
+// when it has one, the candidate's model-specific rest.
+func servedCandidate(c candidate, tokens int) {
+	served(c.rest, c.restKey(), tokens)
+	if id := c.restID(); id != c.restKey() {
+		clearRest(id)
+	}
+}
+
+// clearRest wakes a candidate that just answered, whether it was tried after
+// a provider rest or after a model-specific rest.
+func clearRest(key string) {
 	restingUntil.Lock()
 	delete(restingUntil.m, key)
 	delete(restingUntil.note, key)
@@ -66,12 +80,6 @@ func served(rest, key string, tokens int) {
 // How long a candidate sits out, by why it failed.
 const (
 	creditRest  = 30 * time.Minute // out of credit: until someone tops it up
-	// freeModelRest is how long one OpenRouter free model (preset is
-	// "openrouter" and the name ends in ":free") sits out after a
-	// balance or credit refusal of its own: the refusal is the free tier's
-	// own limit talking, not an empty account, so it rests alone and only
-	// briefly.
-	freeModelRest = 5 * time.Minute
 	quotaRest   = 15 * time.Minute // out of quota, with no word of when it resets
 	longestWait = time.Hour        // the most a vendor's own "try again at" is trusted
 	// longestQuota is the most an account out of quota sits out, when it
@@ -239,14 +247,6 @@ func (s *Server) restAfter(c candidate, status int, header http.Header, body []b
 	r := Rest{Why: why, Status: status, By: "cooldown"}
 	switch why {
 	case failCredit:
-		if c.p.Preset == "openrouter" && strings.HasSuffix(c.model, ":free") {
-			// OpenRouter free models are billed at nothing, so a credit or
-			// balance refusal for one is its own tier limit, not an empty
-			// account: rest only this model, briefly, so the provider's other
-			// models — and a group built on it — keep working.
-			d, r.By = freeModelRest, "free"
-			break
-		}
 		d, r.By = creditRest, "credit"
 	case failQuota:
 		// out of quota is out until the quota comes back: when the refusal
@@ -300,9 +300,15 @@ func (s *Server) restAfter(c candidate, status int, header http.Header, body []b
 	if a := c.p.Account; a != nil {
 		r.agent, r.user = a.Agent, a.User
 	}
+	id := c.restKey()
+	// A 429 from a free OpenRouter model is a model's free-tier limit, not
+	// the account being out of credit. Keep other models available.
+	if why == failRate && c.isOpenRouterFree() {
+		id = c.restID()
+	}
 	restingUntil.Lock()
-	restingUntil.m[c.restID()] = r.Until
-	restingUntil.note[c.restID()] = r
+	restingUntil.m[id] = r.Until
+	restingUntil.note[id] = r
 	restingUntil.Unlock()
 	return r
 }

@@ -13,6 +13,27 @@ import (
 // would, behind a request, of whatever upstream a test serves.
 func init() { allowances = func(string) map[string]provider.Allowance { return nil } }
 
+// resetRests isolates tests that inspect the package-level routing rests.
+func resetRests(t *testing.T) {
+	t.Helper()
+	clear := func() {
+		restingUntil.Lock()
+		restingUntil.m = map[string]time.Time{}
+		restingUntil.note = map[string]Rest{}
+		restingUntil.Unlock()
+	}
+	clear()
+	t.Cleanup(clear)
+}
+
+func restIn(id string) time.Duration {
+	r, ok := restOf(id)
+	if !ok {
+		return 0
+	}
+	return time.Until(r.Until).Round(time.Minute)
+}
+
 func restsOf(cs []candidate) string {
 	s := ""
 	for _, c := range cs {
@@ -263,44 +284,51 @@ func TestUnknownClaudeGoesFirst(t *testing.T) {
 	}
 }
 
-// An OpenRouter free model (preset "openrouter", name ends in ":free")
-// that fails with a credit refusal rests by itself, not with the whole
-// provider: a free tier's own refusal must not bench the provider's other
-// models for half an hour.
-func TestFreeModelRestsAlone(t *testing.T) {
+// A 429 from an OpenRouter free model is that model's free-tier limit, not
+// the account's credit limit: it rests alone and a sibling stays available.
+func TestOpenRouterFreeRateLimitRestsAlone(t *testing.T) {
+	resetRests(t)
 	s := &Server{}
 	p := provider.Provider{ID: "openrouter-free", Preset: "openrouter", Key: "k"}
 	free := candidate{p: p, model: "inclusionai/ling-3.0-flash-sante:free", rest: "openrouter-free"}
 	sib := candidate{p: p, model: "other/thing:free", rest: "openrouter-free"}
-	s.restAfter(free, 402, http.Header{}, []byte(`{"error":{"message":"Your credit balance is too low"}}`))
-	if d := until(free.restID()); d != freeModelRest {
-		t.Fatalf("free model rests %v, want %v", d, freeModelRest)
+	s.restAfter(free, 429, http.Header{}, []byte(`{"error":{"message":"free model credits exhausted"}}`))
+	if d := restIn(free.restID()); d != fallbackCooldown {
+		t.Fatalf("free model rests %v, want %v", d, fallbackCooldown)
 	}
-	if _, ok := restingUntil.m["openrouter-free"]; ok {
+	if _, ok := restOf("openrouter-free"); ok {
 		t.Fatal("a free model's refusal benched the whole provider")
 	}
-	if _, ok := restingUntil.m[sib.restID()]; ok {
+	if _, ok := restOf(sib.restID()); ok {
 		t.Fatal("a free model's refusal benched a sibling free model")
 	}
-	// a non-free model still benches the provider for the usual half hour
-	paid := candidate{p: p, model: "anthropic/claude-opus-4", rest: "openrouter-free"}
-	s.restAfter(paid, 402, http.Header{}, []byte(`{"error":{"message":"Insufficient credits"}}`))
-	if d := until("openrouter-free"); d != creditRest {
-		t.Fatalf("paid model rests %v, want %v", d, creditRest)
+	out, _ := restLast([]candidate{free, sib}, planned{order: []Weighed{{}, {}}})
+	if out[0].model != sib.model {
+		t.Fatalf("rate-limited model was not moved behind its sibling: %s", out[0].model)
+	}
+	servedCandidate(free, 1)
+	if _, ok := restOf(free.restID()); ok {
+		t.Fatal("a free model's answer did not end its rest")
+	}
+	// A 402 remains account-level: all models rest for the usual half hour.
+	s.restAfter(free, 402, http.Header{}, []byte(`{"error":{"message":"Insufficient credits"}}`))
+	if d := restIn("openrouter-free"); d != creditRest {
+		t.Fatalf("credit refusal rests %v, want %v", d, creditRest)
 	}
 }
 
 // A free model on a non-OpenRouter provider keeps the old behavior: a
 // credit refusal benches the whole provider, since it is the account's.
 func TestFreeModelOutsideOpenRouterBenchesProvider(t *testing.T) {
+	resetRests(t)
 	s := &Server{}
 	p := provider.Provider{ID: "relay", Preset: "relay", Key: "k"}
 	free := candidate{p: p, model: "local/thing:free", rest: "relay"}
 	s.restAfter(free, 402, http.Header{}, []byte(`{"error":{"message":"Insufficient credits"}}`))
-	if d := until("relay"); d != creditRest {
+	if d := restIn("relay"); d != creditRest {
 		t.Fatalf("non-openrouter free model rests %v, want %v", d, creditRest)
 	}
-	if _, ok := restingUntil.m[free.restID()]; ok {
+	if _, ok := restOf("relay/local/thing:free"); ok {
 		t.Fatal("non-openrouter free model should be benched by the provider key")
 	}
 }

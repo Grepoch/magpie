@@ -895,7 +895,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		hw.release()
 		model = c.model
 		if call.Status < 400 {
-			served(c.rest, c.restKey(), call.Usage.Input+call.Usage.Output+call.Usage.CacheRead+call.Usage.CacheWrite)
+			servedCandidate(c, call.Usage.Input+call.Usage.Output+call.Usage.CacheRead+call.Usage.CacheWrite)
 			answered(stuck, c, aff.Turn, call.Usage.CacheRead)
 			if hit != nil {
 				ruleAnswered(ruleAt, call.Usage)

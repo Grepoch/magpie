@@ -59,13 +59,14 @@ func (c candidate) restKey() string {
 	return c.rest
 }
 
-// restID is what a candidate rests by in the routing order. An OpenRouter
-// free model (preset "openrouter", name ends in ":free") rests by itself,
-// not with the whole provider: a free tier's own refusal should not bench
-// the provider's other models for the half hour a credit failure otherwise
-// costs them. Other providers keep resting by the provider.
+func (c candidate) isOpenRouterFree() bool {
+	return c.p.Preset == "openrouter" && strings.HasSuffix(c.model, ":free")
+}
+
+// restID is a free OpenRouter model's own rest key. A rate limit on that
+// model is its free-tier limit, while an account-level rest stays on restKey.
 func (c candidate) restID() string {
-	if c.p.Preset == "openrouter" && strings.HasSuffix(c.model, ":free") {
+	if c.isOpenRouterFree() {
 		return c.restKey() + "/" + c.model
 	}
 	return c.restKey()
@@ -334,7 +335,9 @@ func asideOf(cs []candidate, q provider.Provider, fallback bool, from provider.P
 // restLast moves those resting after a recent failure behind the rest.
 func restLast(out []candidate, pl planned) ([]candidate, planned) {
 	if len(out) == 1 {
-		if r, ok := restOf(out[0].restID()); ok {
+		if r, ok := restOf(out[0].restKey()); ok {
+			pl.order[0].Rest = &r // tried all the same: there is no other
+		} else if r, ok := restOf(out[0].restID()); ok {
 			pl.order[0].Rest = &r // tried all the same: there is no other
 		}
 		return out, pl
@@ -342,7 +345,11 @@ func restLast(out []candidate, pl planned) ([]candidate, planned) {
 	var ready, resting []candidate
 	var wReady, wResting []Weighed
 	for i, c := range out {
-		if r, ok := restOf(c.restID()); ok {
+		r, ok := restOf(c.restKey())
+		if !ok && c.restID() != c.restKey() {
+			r, ok = restOf(c.restID())
+		}
+		if ok {
 			pl.order[i].Rest = &r
 			resting, wResting = append(resting, c), append(wResting, pl.order[i])
 		} else {
